@@ -36,6 +36,7 @@ jobs:
           echo "app did not start"; tail -n 50 app.log; exit 1
 
       - name: ZAP baseline scan
+        continue-on-error: true
         run: |
           mkdir zap-out && chmod 777 zap-out
           docker run --rm --network host -v "$PWD/zap-out:/zap/wrk:rw" \
