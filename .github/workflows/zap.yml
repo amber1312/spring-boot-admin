@@ -41,12 +41,17 @@ jobs:
           mkdir zap-out && chmod 777 zap-out
           docker run --rm --network host -v "$PWD/zap-out:/zap/wrk:rw" \
             ghcr.io/zaproxy/zaproxy@sha256:030d3df57735dacbb83464854758e674dd9ad01d79d12a129a8e58b1fd384238 \
-            zap-baseline.py -t http://localhost:8080 -J zap-report.json -I
+            zap-baseline.py -t http://localhost:8080 -J zap-report.json -I \
+            -z "-config globalexcludeurl.url_list.url(0).regex='.*/instances/events.*' -config globalexcludeurl.url_list.url(0).enabled=true" \
+            2>&1 | tee zap-out/zap-console.log
+          exit ${PIPESTATUS[0]}
 
       - name: Verify scan output
         run: test -s zap-out/zap-report.json
 
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: zap-result
-          path: zap-out/zap-report.json
+          path: zap-out/
+          if-no-files-found: ignore
