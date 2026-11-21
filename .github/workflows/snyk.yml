@@ -1,0 +1,47 @@
+name: Snyk
+on: workflow_dispatch
+
+jobs:
+  snyk:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Runner info
+        run: |
+          grep -m1 "model name" /proc/cpuinfo
+          nproc
+          free -m | head -2
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Build modules (setup, not timed)
+        run: ./mvnw -B --no-transfer-progress install -DskipTests -pl '!spring-boot-admin-docs'
+
+      - name: Install Snyk CLI (pinned)
+        run: |
+          npm install -g snyk@1.1308.4
+          snyk --version
+
+      - name: Snyk scan
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: snyk test --all-projects --exclude=spring-boot-admin-docs,spring-boot-admin-e2e,spring-boot-admin-samples,target --json-file-output=snyk-result.json
+
+      - name: Verify scan output
+        run: |
+          test -s snyk-result.json
+          jq -r 'if type=="array" then map(.packageManager) | join(",") else .packageManager end' snyk-result.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: snyk-result
+          path: snyk-result.json
