@@ -1,0 +1,88 @@
+name: SonarQube
+on: workflow_dispatch
+
+jobs:
+  sonarqube:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Runner info
+        run: |
+          grep -m1 "model name" /proc/cpuinfo
+          nproc
+          free -m | head -2
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Build modules (setup, not timed)
+        run: ./mvnw -B --no-transfer-progress install -DskipTests -pl '!spring-boot-admin-docs'
+
+      - name: Start SonarQube
+        run: |
+          sudo sysctl -w vm.max_map_count=262144
+          docker run -d --name sonarqube -p 9000:9000 sonarqube@sha256:f95aaa9016dd4e92c7d70691167a6d96dbb5d8acffd61eba1cb4335d364a7840
+
+      - name: Wait for SonarQube
+        run: |
+          for i in $(seq 1 60); do
+            if curl -s http://localhost:9000/api/system/status | grep -q '"status":"UP"'; then echo up; exit 0; fi
+            sleep 5
+          done
+          echo "SonarQube did not start"; exit 1
+
+      - name: Create token
+        run: |
+          curl -s -u admin:admin -X POST http://localhost:9000/api/users/change_password \
+            -d login=admin -d previousPassword=admin -d password='Sonar-ci-Pass-2026!'
+          TOKEN=$(curl -s -u 'admin:Sonar-ci-Pass-2026!' -X POST http://localhost:9000/api/user_tokens/generate -d name=ci | jq -r .token)
+          echo "::add-mask::$TOKEN"
+          echo "SONAR_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+
+      - name: SonarQube scan
+        run: |
+          docker run --rm --network host -v "$PWD:/usr/src" \
+            sonarsource/sonar-scanner-cli@sha256:47956b669bf486bdad919e1cbd0533223515aa0b6d1d31763e5a3754942df6d7 \
+            -Dsonar.projectKey=sba \
+            -Dsonar.host.url=http://localhost:9000 \
+            -Dsonar.token="$SONAR_TOKEN" \
+            -Dsonar.java.binaries='**/target/classes' \
+            -Dsonar.exclusions='**/src/test/**,**/target/**,**/node_modules/**,spring-boot-admin-docs/**,spring-boot-admin-e2e/**,spring-boot-admin-samples/**,**/*.min.js'
+
+      - name: Wait for analysis to finish
+        run: |
+          for i in $(seq 1 60); do
+            S=$(curl -s -u "$SONAR_TOKEN:" "http://localhost:9000/api/ce/component?component=sba" | jq -r '.current.status // "NONE"') || true
+            Q=$(curl -s -u "$SONAR_TOKEN:" "http://localhost:9000/api/ce/component?component=sba" | jq -r '.queue | length') || true
+            echo "status=$S queue=$Q"
+            if [ "$S" = "SUCCESS" ] && [ "$Q" = "0" ]; then exit 0; fi
+            sleep 5
+          done
+          echo "analysis did not finish"; exit 1
+
+      - name: Export results
+        run: |
+          curl -s -u "$SONAR_TOKEN:" "http://localhost:9000/api/issues/search?componentKeys=sba&ps=1&facets=types,severities" > sonar-issues.json
+          curl -s -u "$SONAR_TOKEN:" "http://localhost:9000/api/issues/search?componentKeys=sba&types=VULNERABILITY&ps=500" > sonar-vulnerabilities.json
+          curl -s -u "$SONAR_TOKEN:" "http://localhost:9000/api/hotspots/search?project=sba&ps=500" > sonar-hotspots.json
+
+      - name: Check analysed size
+        run: |
+          curl -s -u "$SONAR_TOKEN:" "http://localhost:9000/api/measures/component?component=sba&metricKeys=ncloc,files,violations"
+          echo
+
+      - name: Verify scan output
+        run: |
+          test -s sonar-issues.json
+          jq '.total' sonar-issues.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sonar-result
+          path: |
+            sonar-issues.json
+            sonar-vulnerabilities.json
+            sonar-hotspots.json
